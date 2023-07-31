@@ -1,0 +1,2 @@
+Create features :
+python3 main.py --dataset-path "/nasbrain/datasets" --dataset miniimagenet --model resnet12 --epochs 0 --batch-size 128 --sample-aug 30 --load-model "/homes/f21lin/stageFred2A/mini1.pt1" --save-features "/nasbrain/f21lin/miniAS30features.1.pt1"
