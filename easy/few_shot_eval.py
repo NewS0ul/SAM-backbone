@@ -31,7 +31,7 @@ def generate_runs(data, run_classes, run_indices, batch_idx):
 def ncm(train_features, features, run_classes, run_indices, n_shots, elements_train=None):
     with torch.no_grad():
         dim = features.shape[2]
-        targets = torch.arange(args.n_ways).unsqueeze(1).unsqueeze(0).to(args.device)
+        targets = torch.arange(args.n_ways).unsqueeze(1).unsqueeze(0).to(args.device) 
         features = preprocess(train_features, features, elements_train=elements_train)
         scores = []
         for batch_idx in range(n_runs // batch_few_shot_runs):
@@ -41,6 +41,10 @@ def ncm(train_features, features, run_classes, run_indices, n_shots, elements_tr
             winners = torch.min(distances, dim = 2)[1]
             scores += list((winners == targets).float().mean(dim = 1).mean(dim = 1).to("cpu").numpy())
         return stats(scores, "")
+
+def crops_ncm(train_features, features, run_classes, run_indices, n_shots, elements_train=None):
+    with torch.no_grad():
+        return
 
 def transductive_ncm(train_features, features, run_classes, run_indices, n_shots, n_iter_trans = args.transductive_n_iter, n_iter_trans_sinkhorn = args.transductive_n_iter_sinkhorn, temp_trans = args.transductive_temperature, alpha_trans = args.transductive_alpha, cosine = args.transductive_cosine, elements_train=None):
     with torch.no_grad():
@@ -135,29 +139,45 @@ def ncm_cosine(train_features, features, run_classes, run_indices, n_shots, elem
 
 def get_features(model, loader, n_aug = args.sample_aug):
     model.eval()
-    if not args.sam_type:
-        for augs in tqdm(range(n_aug),unit="aug",desc="get_features"):
-            all_features, offset, max_offset = [], 1000000, 0
-            for batch_idx, (data, target) in enumerate(tqdm(loader,unit="batch")):        
-                with torch.no_grad():
-                    data, target = data.to(args.device), target.to(args.device)
-                    _, features = model(data)
-                    all_features.append(features)
-                    offset = min(min(target), offset)
-                    max_offset = max(max(target), max_offset)
-            num_classes = max_offset - offset + 1
+    if args.masks_dir: 
+        with torch.inference_mode():
+            all_features, offset, max_offset = {}, 1000000, 0
+            for batch_idx, (data,img_name) in enumerate(tqdm(loader,unit="batch")): 
+                data = data.to(args.device) # [B, 3, 84, 84]
+                _, features = model(data) # [B, 640]
+                for i in range(len(img_name)):
+                    if img_name[i] not in all_features:
+                        all_features[img_name[i]] = [features[i]]
+                    else:
+                        all_features[img_name[i]].append(features[i])
             print(".", end='')
-            if augs == 0:
-                features_total = torch.cat(all_features, dim = 0).reshape(num_classes, -1, all_features[0].shape[1])
-            else:
-                features_total += torch.cat(all_features, dim = 0).reshape(num_classes, -1, all_features[0].shape[1])
-    else:
-        for batch_idx,(data,target) in enumerate(tqdm(loader,unit="batch")):
-            with torch.no_grad():
-                data,target = data.to(args.device),target.to(args.device)
-                print(data.shape)
-                print(target.shape)
+            classes =  []
+            for img_name in all_features:
+                all_features[img_name] = torch.stack(all_features[img_name], dim = 0)
+                all_features[img_name] = torch.mean(all_features[img_name], dim = 0)
+                if img_name[:9] not in classes:
+                    classes.append(img_name[:9])
+            num_classes = len(classes)
+            features_total = list(all_features.values())
+            features_total = torch.cat(features_total, dim = 0).reshape(num_classes, -1, features_total[0].shape[0]) # [C, 600, 640]
+            return features_total
+            
                 
+    for augs in tqdm(range(n_aug),unit="aug",desc="get_features"):
+        all_features, offset, max_offset = [], 1000000, 0
+        for batch_idx, (data, target) in enumerate(tqdm(loader,unit="batch")):        
+            with torch.no_grad():
+                data, target = data.to(args.device), target.to(args.device)
+                _, features = model(data)
+                all_features.append(features.cpu())
+                offset = min(min(target), offset)
+                max_offset = max(max(target), max_offset)
+        num_classes = max_offset - offset + 1
+        print(".", end='')
+        if augs == 0:
+            features_total = torch.cat(all_features, dim = 0).reshape(num_classes, -1, all_features[0].shape[1])
+        else:
+            features_total += torch.cat(all_features, dim = 0).reshape(num_classes, -1, all_features[0].shape[1])
     return features_total / n_aug
 
 def eval_few_shot(train_features, val_features, novel_features, val_run_classes, val_run_indices, novel_run_classes, novel_run_indices, n_shots, transductive = False,elements_train=None):

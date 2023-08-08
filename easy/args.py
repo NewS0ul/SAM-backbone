@@ -98,11 +98,13 @@ parser.add_argument("--transductive-cosine", action="store_true", help="use cosi
 parser.add_argument("--sam-type", type=str, default="", help="size of SAM ViT")
 parser.add_argument("--sam-path", type=str, default="", help="path to SAM") 
 parser.add_argument("--points-per-side", type=int, default=10, help="number of points for automatic mask generator")
-parser.add_argument("--crop-threshold", type=float, default=0.3, help="Replace crop if crop ratio is below threshold when using SAM")
 parser.add_argument("--all-filenamecsv", type=str, default="", help="csv file containing all the filenames")
-parser.add_argument("--masks-dir", type=str, default="", help="directory containing the masks using SAM")
 parser.add_argument("--skipped-images", type=str, default="", help="csv file containing the skipped images when creating masks")
-
+parser.add_argument("--processed-masks", type=str, default="", help="directory containing the masks names that have been processed for feature extraction")
+parser.add_argument("--load-features-checkpoint", type=str, default="", help="load features checkpoint")
+parser.add_argument("--crop-threshold", type=float, default=0.3, help="Replace crop if crop ratio is below threshold when using SAM")
+parser.add_argument("--masks-dir", type=str, default="", help="directory containing the masks using SAM")
+parser.add_argument("--save-cropsFeatures", type=str, default="", help="save crops features to file")
 try :
     get_ipython()
     args = parser.parse_args(args=[])

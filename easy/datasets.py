@@ -3,8 +3,9 @@ from args import args
 import numpy as np
 import torch
 import os
-from sam_crop import SAMTransform
-
+from tqdm import tqdm
+import json
+from PIL import Image
 class CPUDataset():
     def __init__(self, data, targets, transforms = [], batch_size = args.batch_size, use_hd = False):
         self.data = data
@@ -17,13 +18,46 @@ class CPUDataset():
         self.batch_size = batch_size
         self.transforms = transforms
         self.use_hd = use_hd
+        if args.masks_dir:
+            with open(args.masks_dir+"/masks_per_image.json", "r") as f:
+                self.masks_per_image = json.load(f)
+            self.masks = []
+            for image_path in data:
+                image_name = image_path.split("/")[-1]
+                self.masks.extend(self.masks_per_image[image_name])
+
     def __getitem__(self, idx):
-        if self.use_hd:
-            elt = transforms.ToTensor()(np.array(Image.open(self.data[idx]).convert('RGB')))
+        if not args.masks_dir:
+            if self.use_hd:
+                elt = transforms.ToTensor()(np.array(Image.open(self.data[idx]).convert('RGB')))
+            else:
+                elt = self.data[idx]
+            return self.transforms(elt), self.targets[idx]
+
         else:
-            elt = self.data[idx]
-        return self.transforms(elt), self.targets[idx]
+            mask_name = self.masks[idx]
+            img_name = mask_name.split("_")[0]+".jpg"
+            img_path = args.dataset_path+"miniimagenetimages/images/"+img_name
+            img = Image.open(img_path).convert('RGB')
+            img = transforms.ToTensor()(img)
+            _,height,width = img.shape
+            mask = torch.load(args.masks_dir+"/"+mask_name)
+            coords = torch.where(mask == 1)
+            
+            bbox = [torch.min(coords[0]), torch.min(coords[1]), torch.max(coords[0]), torch.max(coords[1])] # ymin, xmin, ymax, xmax
+            bbox= [x.item() for x in bbox]
+            crop_width,crop_height = bbox[2]-bbox[0],bbox[3]-bbox[1] # height, width
+            if crop_width/width < args.crop_threshold: # if the crop is too small, expand it
+                crop_width = width*args.crop_threshold
+            if crop_height/height < args.crop_threshold: # if the crop is too small, expand it
+                crop_height = height*args.crop_threshold
+            #Crop image
+            crop = img[:,bbox[0]:round(bbox[0]+crop_height), bbox[1]:round(bbox[1]+crop_width)] # crop_height, crop_width, 3
+            elt = crop.float() # 3, crop_height, crop_width
+            return self.transforms(elt),img_name
     def __len__(self):
+        if args.masks_dir:
+            return len(self.masks)
         return self.length
         
 class EpisodicCPUDataset():
@@ -328,12 +362,8 @@ def miniImageNet(use_hd = True):
         datasets[subset] = [data, torch.LongTensor(target)]
     norm = transforms.Normalize(np.array([x / 255.0 for x in [125.3, 123.0, 113.9]]), np.array([x / 255.0 for x in [63.0, 62.1, 66.7]]))
     train_transforms = torch.nn.Sequential(transforms.RandomResizedCrop(84), transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4), transforms.RandomHorizontalFlip(), norm)
-    if args.sam_type:
-        print("Using SAM")
-        all_transforms = SAMTransform(norm,size=(84,84))
-        print("SAM loaded")
-    else:
-        all_transforms = torch.nn.Sequential(transforms.Resize(92), transforms.CenterCrop(84), norm) if args.sample_aug == 1 else torch.nn.Sequential(transforms.RandomResizedCrop(84), norm)
+    
+    all_transforms = torch.nn.Sequential(transforms.Resize(92,antialias=True), transforms.CenterCrop(84), norm) if args.sample_aug == 1 else torch.nn.Sequential(transforms.RandomResizedCrop(84), norm)
     if args.episodic:
         train_loader = episodic_iterator(datasets["train"][0], 64, transforms = train_transforms, forcecpu = True, use_hd = True)
     else:
@@ -341,7 +371,9 @@ def miniImageNet(use_hd = True):
     train_clean = iterator(datasets["train"][0], datasets["train"][1], transforms = all_transforms, forcecpu = True, shuffle = False, use_hd = use_hd)
     val_loader = iterator(datasets["validation"][0], datasets["validation"][1], transforms = all_transforms, forcecpu = True, shuffle = False, use_hd = use_hd)
     test_loader = iterator(datasets["test"][0], datasets["test"][1], transforms = all_transforms, forcecpu = True, shuffle = False, use_hd = use_hd)
-    return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (64, 16, 20, 600), True, False
+    #return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (64, 16, 20, 600), True, False
+    return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (10, 5, 5, 100), True, False
+
 
 
 def tieredImageNet(use_hd=True):
