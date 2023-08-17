@@ -85,7 +85,20 @@ def preprocess(train_features, features, elements_train=None):
                 train_features = centering(train_features, train_features)
     return features
 
-
+def preprocess_crops(train_features, features, elements_train=None):
+    stacked_train_features = []
+    for class_name in train_features: # stack all crops
+        for img_name in train_features[class_name]:
+            for crop_features in train_features[class_name][img_name]:
+                stacked_train_features.append(crop_features)
+    stacked_train_features = torch.stack(stacked_train_features, dim=0) # shape: [n_crops, 640]
+    averaged_train_features = torch.mean(stacked_train_features, dim=0) # shape: [640]
+    for class_name in features:
+        for img_name in features[class_name]:
+            for crop_idx in range(len(features[class_name][img_name])):
+                features[class_name][img_name][crop_idx] = features[class_name][img_name][crop_idx] - averaged_train_features # centering
+                features[class_name][img_name][crop_idx] /= torch.norm(features[class_name][img_name][crop_idx], p = 2, dim = 0, keepdim = True) # sphering
+    return features # shape: [n_classes, n_images, n_crops, 640]
 def postprocess(runs):
     # runs shape: [100, 5, 16, 640]
     for i in range(len(args.postprocessing)):

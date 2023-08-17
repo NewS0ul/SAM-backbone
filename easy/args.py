@@ -104,17 +104,21 @@ parser.add_argument("--processed-masks", type=str, default="", help="directory c
 parser.add_argument("--load-features-checkpoint", type=str, default="", help="load features checkpoint")
 parser.add_argument("--crop-threshold", type=float, default=0.3, help="Replace crop if crop ratio is below threshold when using SAM")
 parser.add_argument("--masks-dir", type=str, default="", help="directory containing the masks using SAM")
-parser.add_argument("--save-cropsFeatures", type=str, default="", help="save crops features to file")
+parser.add_argument("--use-masks", action="store_true", help="use masks for feature extraction")
 try :
     get_ipython()
     args = parser.parse_args(args=[])
 except :
     args = parser.parse_args()
 
+#args.dataset_path = "/nasbrain/f21lin/testing"
+#args.masks_dir = "/nasbrain/f21lin/masks"
+
 ### process arguments
 if args.dataset_device == "":
     args.dataset_device = args.device
-    
+
+
 if args.dataset_path[-1] != '/':
     args.dataset_path += "/"
 

@@ -372,7 +372,7 @@ def miniImageNet(use_hd = True):
     val_loader = iterator(datasets["validation"][0], datasets["validation"][1], transforms = all_transforms, forcecpu = True, shuffle = False, use_hd = use_hd)
     test_loader = iterator(datasets["test"][0], datasets["test"][1], transforms = all_transforms, forcecpu = True, shuffle = False, use_hd = use_hd)
     #return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (64, 16, 20, 600), True, False
-    return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (10, 5, 5, 100), True, False
+    return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (20, 10, 10, 100), True, False
 
 
 

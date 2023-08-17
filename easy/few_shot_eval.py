@@ -3,9 +3,11 @@ import numpy as np
 from args import *
 from utils import *
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 n_runs = args.n_runs
 batch_few_shot_runs = args.batch_fs
-assert(n_runs % batch_few_shot_runs == 0)
+#assert(n_runs % batch_few_shot_runs == 0)
 
 def define_runs(n_ways, n_shots, n_queries, num_classes, elements_per_class):
     shuffle_classes = torch.LongTensor(np.arange(num_classes))
@@ -17,17 +19,32 @@ def define_runs(n_ways, n_shots, n_queries, num_classes, elements_per_class):
             run_indices[i,j] = torch.randperm(elements_per_class[run_classes[i, j]])[:n_shots + n_queries]
     return run_classes, run_indices
 
-def generate_runs(data, run_classes, run_indices, batch_idx):
-    n_runs, n_ways, n_samples = run_classes.shape[0], run_classes.shape[1], run_indices.shape[2]
+def generate_runs(data, run_classes, run_indices, batch_idx): #get the right data and labels for the batch
+    run_classes = run_classes[batch_idx * batch_few_shot_runs : (batch_idx + 1) * batch_few_shot_runs] #(batch_few_shot_runs, n_ways)
+    run_indices = run_indices[batch_idx * batch_few_shot_runs : (batch_idx + 1) * batch_few_shot_runs] #(batch_few_shot_runs, n_ways, n_samples)
+    run_classes = run_classes.unsqueeze(2).unsqueeze(3).repeat(1,1,data.shape[1], data.shape[2]) #(batch_few_shot_runs, n_ways, data.shape[1], data.shape[2])
+    run_indices = run_indices.unsqueeze(3).repeat(1, 1, 1, data.shape[2]) #(batch_few_shot_runs, n_ways, n_samples, data.shape[2])
+    datas = data.unsqueeze(0).repeat(batch_few_shot_runs, 1, 1, 1) #(batch_few_shot_runs, data.shape[0], data.shape[1], data.shape[2])
+    cclasses = torch.gather(datas, 1, run_classes) #(batch_few_shot_runs, n_ways, data.shape[1], data.shape[2])
+    res = torch.gather(cclasses, 2, run_indices) #(batch_few_shot_runs, n_ways, n_samples, data.shape[2])
+    return res
+def generate_runs_list(data, run_classes, run_indices, batch_idx):
     run_classes = run_classes[batch_idx * batch_few_shot_runs : (batch_idx + 1) * batch_few_shot_runs]
     run_indices = run_indices[batch_idx * batch_few_shot_runs : (batch_idx + 1) * batch_few_shot_runs]
-    run_classes = run_classes.unsqueeze(2).unsqueeze(3).repeat(1,1,data.shape[1], data.shape[2])
-    run_indices = run_indices.unsqueeze(3).repeat(1, 1, 1, data.shape[2])
-    datas = data.unsqueeze(0).repeat(batch_few_shot_runs, 1, 1, 1)
-    cclasses = torch.gather(datas, 1, run_classes)
-    res = torch.gather(cclasses, 2, run_indices)
-    return res
+    runs = []
+    for run_idx in range(batch_few_shot_runs):
+        run = []
+        for class_idx in range(run_classes.shape[1]):
+            class_data = []
+            for img_idx in range(run_indices.shape[2]):
+                class_data.append(data[run_classes[run_idx][class_idx]][run_indices[run_idx][class_idx][img_idx]])
+            run.append(class_data)
+        runs.append(run)
+    return runs
 
+def distances_list(runs, n_shots):
+    return
+        
 def ncm(train_features, features, run_classes, run_indices, n_shots, elements_train=None):
     with torch.no_grad():
         dim = features.shape[2]
@@ -43,8 +60,93 @@ def ncm(train_features, features, run_classes, run_indices, n_shots, elements_tr
         return stats(scores, "")
 
 def crops_ncm(train_features, features, run_classes, run_indices, n_shots, elements_train=None):
+    import json
+    
+    from PIL import Image
     with torch.no_grad():
-        return
+        features = preprocess_crops(train_features, features, elements_train=elements_train)
+        all_classes = list(features.keys())
+        with open(args.masks_dir+"/masks_per_image.json", "r") as f:
+            masks_per_image = json.load(f)
+        n_runs, n_ways, n_samples = run_indices.shape
+        acc = 0
+        for run_idx in tqdm(range(n_runs)):
+            supports = []
+            support_labels = []
+            queries = []
+            query_labels = []
+            run_class = [all_classes[class_idx] for class_idx in run_classes[run_idx]] #list of classes in the run
+            for class_idx,class_name in enumerate(run_class):
+                class_imgs = list(features[class_name].keys())
+                run_class_imgs = [class_imgs[img_idx] for img_idx in run_indices[run_idx][class_idx]] #list of image of the class in the run
+                for img_idx,image_name in enumerate(run_class_imgs):
+                    if img_idx < n_shots: 
+                        for crop_idx,crop_feature in enumerate(features[class_name][image_name]):
+                            supports.append(crop_feature) #add the crop feature to the support set
+                            support_labels.append([crop_idx,class_name,image_name]) #add the class name to the support set
+                    else: #if it is a query image
+                        for crop_idx,crop_feature in enumerate(features[class_name][image_name]): 
+                            queries.append(crop_feature) #add the crop feature to the query set
+                            query_labels.append([crop_idx,class_name,image_name]) #add the class name and the image name to the query set
+            supports = torch.stack(supports).to(args.device)
+            queries = torch.stack(queries).to(args.device)
+            distances = torch.cdist(queries,supports,p=2)
+            queries_grouped = {}
+            for i,[crop_idx,class_name,image_name] in enumerate(query_labels):
+                if image_name not in queries_grouped:
+                    queries_grouped[image_name] = []
+                for j,distance in enumerate(distances[i]):
+                    queries_grouped[image_name].append([distance,support_labels[j],[crop_idx,class_name]])
+            run_acc = 0
+            for query_name,distance_info in queries_grouped.items():
+                sorted_distance_info = sorted(distance_info,key=lambda x:x[0])
+                queries_grouped[query_name] = sorted_distance_info
+                for (distance,[support_crop_idx,support_class,support_name],[query_crop_idx,query_class]) in sorted_distance_info[:20]:
+                    query_mask = torch.load(args.masks_dir+"/"+masks_per_image[query_name][query_crop_idx])
+                    support_mask = torch.load(args.masks_dir+"/"+masks_per_image[support_name][support_crop_idx])
+                    query_image = Image.open(args.dataset_path + "miniimagenetimages/images/" + query_name)
+                    support_image = Image.open(args.dataset_path + "miniimagenetimages/images/" + support_name)
+                
+                    query_height,query_width = query_mask.shape
+                    support_height,support_width = support_mask.shape
+                    query_coords = torch.where(query_mask==1)
+                    support_coords = torch.where(support_mask==1)
+                    query_bbox = [torch.min(query_coords[0]),torch.min(query_coords[1]),torch.max(query_coords[0]),torch.max(query_coords[1])]
+                    support_bbox = [torch.min(support_coords[0]),torch.min(support_coords[1]),torch.max(support_coords[0]),torch.max(support_coords[1])]
+                    query_crop_width,query_crop_height = query_bbox[2]-query_bbox[0],query_bbox[3]-query_bbox[1]
+                    support_crop_width,support_crop_height = support_bbox[2]-support_bbox[0],support_bbox[3]-support_bbox[1]
+                    if query_crop_width/query_width < args.crop_threshold:
+                        query_crop_width = query_width*args.crop_threshold
+                    if query_crop_height/query_height < args.crop_threshold:
+                        query_crop_height = query_height*args.crop_threshold
+                    if support_crop_width/support_width < args.crop_threshold:
+                        support_crop_width = support_width*args.crop_threshold
+                    if support_crop_height/support_height < args.crop_threshold:
+                        support_crop_height = support_height*args.crop_threshold
+                
+                    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+                    main_title = f"Distance: {distance:.2f}"
+                    fig.suptitle(main_title, fontsize=16)
+                    axes[0].imshow(query_image)
+                    axes[0].add_patch(Rectangle((query_bbox[1], query_bbox[0]), query_crop_height, query_crop_width, fill=False, edgecolor='red', lw=3))
+                    axes[0].imshow(query_mask,alpha=0.3)
+                    axes[0].set_title("Query Image: "+query_name)
+                    axes[0].axis('off')
+                    axes[1].imshow(support_image)
+                    axes[1].add_patch(Rectangle((support_bbox[1], support_bbox[0]), support_crop_height, support_crop_width, fill=False, edgecolor='red', lw=3))
+                    axes[1].imshow(support_mask,alpha=0.3)
+                    axes[1].set_title("Support Image: "+support_name)
+                    axes[1].axis('off')
+                    plt.tight_layout()
+                    plt.show()
+                for i in range(5):
+                    print("#" * 100 + "\n")
+                #run_acc += min_class == query_class
+                #run_acc = run_acc/len(queries_grouped)
+            #acc+=run_acc
+            #print("run acc: ",run_acc)
+        print("Crops NCM accuracy: ",acc/n_runs)
+        exit()
 
 def transductive_ncm(train_features, features, run_classes, run_indices, n_shots, n_iter_trans = args.transductive_n_iter, n_iter_trans_sinkhorn = args.transductive_n_iter_sinkhorn, temp_trans = args.transductive_temperature, alpha_trans = args.transductive_alpha, cosine = args.transductive_cosine, elements_train=None):
     with torch.no_grad():
@@ -146,21 +248,13 @@ def get_features(model, loader, n_aug = args.sample_aug):
                 data = data.to(args.device) # [B, 3, 84, 84]
                 _, features = model(data) # [B, 640]
                 for i in range(len(img_name)):
-                    if img_name[i] not in all_features:
-                        all_features[img_name[i]] = [features[i]]
-                    else:
-                        all_features[img_name[i]].append(features[i])
-            print(".", end='')
-            classes =  []
-            for img_name in all_features:
-                all_features[img_name] = torch.stack(all_features[img_name], dim = 0)
-                all_features[img_name] = torch.mean(all_features[img_name], dim = 0)
-                if img_name[:9] not in classes:
-                    classes.append(img_name[:9])
-            num_classes = len(classes)
-            features_total = list(all_features.values())
-            features_total = torch.cat(features_total, dim = 0).reshape(num_classes, -1, features_total[0].shape[0]) # [C, 600, 640]
-            return features_total
+                    class_name = img_name[i][:9]
+                    if class_name not in all_features:
+                        all_features[class_name] = {}
+                    if img_name[i] not in all_features[class_name]:
+                        all_features[class_name][img_name[i]] = []
+                    all_features[class_name][img_name[i]].append(features[i])
+            return all_features
             
                 
     for augs in tqdm(range(n_aug),unit="aug",desc="get_features"):
@@ -187,8 +281,10 @@ def eval_few_shot(train_features, val_features, novel_features, val_run_classes,
         else:
             return kmeans(train_features, val_features, val_run_classes, val_run_indices, n_shots, elements_train=elements_train), kmeans(train_features, novel_features, novel_run_classes, novel_run_indices, n_shots, elements_train=elements_train)
     else:
-        return ncm(train_features, val_features, val_run_classes, val_run_indices, n_shots, elements_train=elements_train), ncm(train_features, novel_features, novel_run_classes, novel_run_indices, n_shots, elements_train=elements_train)
-
+        if not(args.use_masks):
+            return ncm(train_features, val_features, val_run_classes, val_run_indices, n_shots, elements_train=elements_train), ncm(train_features, novel_features, novel_run_classes, novel_run_indices, n_shots, elements_train=elements_train)
+        else:
+            return crops_ncm(train_features, val_features, val_run_classes, val_run_indices, n_shots, elements_train=elements_train), crops_ncm(train_features, novel_features, novel_run_classes, novel_run_indices, n_shots, elements_train=elements_train)
 def update_few_shot_meta_data(model, train_clean, novel_loader, val_loader, few_shot_meta_data):
 
     if "M" in args.preprocessing or args.save_features != '':
@@ -215,7 +311,15 @@ def evaluate_shot(index, train_features, val_features, novel_features, few_shot_
                 else:
                     torch.save(model.module.state_dict(), args.save_model + str(args.n_shots[index]))
             if args.save_features != "":
-                torch.save(torch.cat([train_features, val_features, novel_features], dim = 0), args.save_features + str(args.n_shots[index]))
+                if not(args.use_masks):
+                    torch.save(torch.cat([train_features, val_features, novel_features], dim = 0), args.save_features + str(args.n_shots[index]))
+                else:
+                    all_features = []
+                    all_features.extend(train_features)
+                    all_features.extend(val_features)
+                    all_features.extend(novel_features)
+                    torch.save(all_features, args.save_features + str(args.n_shots[index]))
+                    
         few_shot_meta_data["best_val_acc"][index] = val_acc
         few_shot_meta_data["best_novel_acc"][index] = novel_acc
     return val_acc, val_conf, novel_acc, novel_conf

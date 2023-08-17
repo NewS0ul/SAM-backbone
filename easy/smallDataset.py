@@ -2,34 +2,47 @@ import os
 import shutil
 import pandas as pd
 from tqdm import tqdm
-import random
+import numpy as np
 
 if os.path.exists("/nasbrain/f21lin/testing/miniimagenetimages/images"):
     shutil.rmtree("/nasbrain/f21lin/testing/miniimagenetimages/images")
 os.mkdir("/nasbrain/f21lin/testing/miniimagenetimages/images")
 
-df = pd.read_csv("/nasbrain/datasets/miniimagenetimages/test.csv")
+df_train = pd.read_csv("/nasbrain/datasets/miniimagenetimages/train.csv")
+df_val = pd.read_csv("/nasbrain/datasets/miniimagenetimages/validation.csv")
+df_test = pd.read_csv("/nasbrain/datasets/miniimagenetimages/test.csv")
+df = pd.concat([df_train, df_val, df_test])
 labels = df["label"].unique()
-image_per_class = {}
-for label in labels:
-    image_per_class[label] = df[df["label"] == label]["filename"].values.tolist()
+labels = np.random.permutation(labels)
 
-selected_images = []
-for label in labels:
-    selected_images.append(random.sample(image_per_class[label], 100))
-selected_images = [item for sublist in selected_images for item in sublist]
+train_classes = labels[:20]
+val_classes = labels[20:30]
+test_classes = labels[30:40]
+
+selected_train_images = []
+selected_val_images = []
+selected_test_images = []
+
+for label in train_classes:
+    label_images = df[df["label"] == label]["filename"].values
+    selected_train_images.extend(np.random.choice(label_images, 100, replace=False))
+
+for label in val_classes:
+    label_images = df[df["label"] == label]["filename"].values
+    selected_val_images.extend(np.random.choice(label_images, 100, replace=False))
+
+for label in test_classes:
+    label_images = df[df["label"] == label]["filename"].values
+    selected_test_images.extend(np.random.choice(label_images, 100, replace=False))
+selected_train_df = df[df["filename"].isin(selected_train_images)]
+selected_val_df = df[df["filename"].isin(selected_val_images)]
+selected_test_df = df[df["filename"].isin(selected_test_images)]
+
+selected_train_df.to_csv("/nasbrain/f21lin/testing/miniimagenetimages/train.csv", index=False)
+selected_val_df.to_csv("/nasbrain/f21lin/testing/miniimagenetimages/validation.csv", index=False)
+selected_test_df.to_csv("/nasbrain/f21lin/testing/miniimagenetimages/test.csv", index=False)
+
+selected_images = np.concatenate((selected_train_images, selected_val_images, selected_test_images))
 for image in tqdm(selected_images):
     shutil.copy("/nasbrain/datasets/miniimagenetimages/images/" + image, "/nasbrain/f21lin/testing/miniimagenetimages/images/" + image)
-
-train_classes = labels[:10]
-val_classes = labels[10:15]
-test_classes = labels[15:20]
-
-train_df = df[df["label"].isin(train_classes)&df["filename"].isin(selected_images)]
-val_df = df[df["label"].isin(val_classes)&df["filename"].isin(selected_images)]
-test_df = df[df["label"].isin(test_classes)&df["filename"].isin(selected_images)]
-train_df.to_csv("/nasbrain/f21lin/testing/miniimagenetimages/train.csv", index=False)
-val_df.to_csv("/nasbrain/f21lin/testing/miniimagenetimages/validation.csv", index=False)
-test_df.to_csv("/nasbrain/f21lin/testing/miniimagenetimages/test.csv", index=False)
-
 

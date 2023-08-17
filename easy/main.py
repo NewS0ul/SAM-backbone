@@ -315,11 +315,24 @@ if args.test_features != "":
         filenames = args.test_features
     if isinstance(filenames, str):
         filenames = [filenames]
-    test_features = torch.cat([torch.load(fn, map_location=torch.device(args.device)).to(args.dataset_device) for fn in filenames], dim = 2)
-    print("Testing features of shape", test_features.shape)
-    train_features = test_features[:num_classes]
-    val_features = test_features[num_classes:num_classes + val_classes]
-    test_features = test_features[num_classes + val_classes:]
+    if args.use_masks:
+        features = torch.load(filenames[0], map_location=torch.device(args.device)) #only one file if masks are used
+        train_features = {}
+        val_features = {}
+        test_features = {}
+        for i,class_name in enumerate(features.keys()):
+            if i < num_classes:
+                train_features[class_name] = features[class_name]
+            elif i < num_classes + val_classes:
+                val_features[class_name] = features[class_name]
+            else:
+                test_features[class_name] = features[class_name]
+    else:
+        test_features = torch.cat([torch.load(fn, map_location=torch.device(args.device)).to(args.dataset_device) for fn in filenames], dim = 2)
+        print("Testing features of shape", test_features.shape)
+        train_features = test_features[:num_classes]
+        val_features = test_features[num_classes:num_classes + val_classes]
+        test_features = test_features[num_classes + val_classes:]
     if not args.transductive:
         for i in range(len(args.n_shots)):
             val_acc, val_conf, test_acc, test_conf = few_shot_eval.evaluate_shot(i, train_features, val_features, test_features, few_shot_meta_data)
