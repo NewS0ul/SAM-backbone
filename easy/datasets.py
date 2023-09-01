@@ -6,6 +6,7 @@ import os
 from tqdm import tqdm
 import json
 from PIL import Image
+
 class CPUDataset():
     def __init__(self, data, targets, transforms = [], batch_size = args.batch_size, use_hd = False):
         self.data = data
@@ -19,12 +20,26 @@ class CPUDataset():
         self.transforms = transforms
         self.use_hd = use_hd
         if args.masks_dir:
-            with open(args.masks_dir+"/masks_per_image.json", "r") as f:
-                self.masks_per_image = json.load(f)
-            self.masks = []
-            for image_path in data:
-                image_name = image_path.split("/")[-1]
-                self.masks.extend(self.masks_per_image[image_name])
+            with open(args.masks_dir+"/masks_info.json", "r") as f:
+                self.masks_info = json.load(f)
+            self.masks = [] #list of tuples (image_name,bbox)*
+            try:
+                with open(args.masks_dir+"/skipped.txt","r") as f:
+                    skipped_images = f.readlines()
+                    skipped_images = [image.strip() for image in skipped_images]
+            except FileNotFoundError:
+                skipped_images = []
+            for image_name in self.masks_info:
+                if image_name not in skipped_images:
+                    self.masks.append((image_name,[0,0,self.masks_info[image_name][0]["crop_box"][2],self.masks_info[image_name][0]["crop_box"][3]])) #add the mask for the whole image
+                    for i in range(len(self.masks_info[image_name])):
+                        self.masks.append((image_name,self.masks_info[image_name][i]["bbox"]))
+                else :
+                    img = Image.open(args.dataset_path+args.dataset+"/images/"+image_name).convert('RGB')
+                    width,height = img.size
+                    self.masks.append((image_name,[0,0,width,height])) #add the mask for the whole image
+            print(f"loaded {len(self.masks)} masks for {len(self.masks_info)} images")
+            
 
     def __getitem__(self, idx):
         if not args.masks_dir:
@@ -35,24 +50,27 @@ class CPUDataset():
             return self.transforms(elt), self.targets[idx]
 
         else:
-            mask_name = self.masks[idx]
-            img_name = mask_name.split("_")[0]+".jpg"
-            img_path = args.dataset_path+"miniimagenetimages/images/"+img_name
+            
+            img_name,bbox = self.masks[idx]
+            img_path = args.dataset_path+args.dataset+"/images/"+img_name
+
             img = Image.open(img_path).convert('RGB')
+            if args.resize:
+                width,height = img.size #resize only if you resized the images when generating the masks
+                aspect_ratio = width/height
+                if height > width:
+                    img = transforms.Resize((args.average_height,int(args.average_height*aspect_ratio)),antialias=True)(img) #resize keeping aspect ratio
+                else:
+                    img = transforms.Resize((int(args.average_width/aspect_ratio),args.average_width),antialias=True)(img) #resize keeping aspect ratio
             img = transforms.ToTensor()(img)
             _,height,width = img.shape
-            mask = torch.load(args.masks_dir+"/"+mask_name)
-            coords = torch.where(mask == 1)
-            
-            bbox = [torch.min(coords[0]), torch.min(coords[1]), torch.max(coords[0]), torch.max(coords[1])] # ymin, xmin, ymax, xmax
-            bbox= [x.item() for x in bbox]
-            crop_width,crop_height = bbox[2]-bbox[0],bbox[3]-bbox[1] # height, width
-            if crop_width/width < args.crop_threshold: # if the crop is too small, expand it
+            crop_width,crop_height = bbox[2],bbox[3]
+            if crop_width/width < args.crop_threshold: # if the crop is too small, expand it to add cpntext
                 crop_width = width*args.crop_threshold
-            if crop_height/height < args.crop_threshold: # if the crop is too small, expand it
+            if crop_height/height < args.crop_threshold: # if the crop is too small, expand it to add cpntext
                 crop_height = height*args.crop_threshold
             #Crop image
-            crop = img[:,bbox[0]:round(bbox[0]+crop_height), bbox[1]:round(bbox[1]+crop_width)] # crop_height, crop_width, 3
+            crop = img[:,int(bbox[1]):round(bbox[1]+crop_height), int(bbox[0]):round(bbox[0]+crop_width)] # 3, crop_height, crop_width
             elt = crop.float() # 3, crop_height, crop_width
             return self.transforms(elt),img_name
     def __len__(self):
@@ -360,10 +378,11 @@ def miniImageNet(use_hd = True):
                     else:
                         data.append(path)
         datasets[subset] = [data, torch.LongTensor(target)]
+    
     norm = transforms.Normalize(np.array([x / 255.0 for x in [125.3, 123.0, 113.9]]), np.array([x / 255.0 for x in [63.0, 62.1, 66.7]]))
     train_transforms = torch.nn.Sequential(transforms.RandomResizedCrop(84), transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4), transforms.RandomHorizontalFlip(), norm)
     
-    all_transforms = torch.nn.Sequential(transforms.Resize(92,antialias=True), transforms.CenterCrop(84), norm) if args.sample_aug == 1 else torch.nn.Sequential(transforms.RandomResizedCrop(84), norm)
+    all_transforms = torch.nn.Sequential(transforms.Resize(92,antialias=True), transforms.CenterCrop(84), norm) if args.sample_aug == 1 else torch.nn.Sequential(transforms.RandomResizedCrop(84,antialias=True), norm)
     if args.episodic:
         train_loader = episodic_iterator(datasets["train"][0], 64, transforms = train_transforms, forcecpu = True, use_hd = True)
     else:
@@ -374,8 +393,47 @@ def miniImageNet(use_hd = True):
     #return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (64, 16, 20, 600), True, False
     return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (20, 10, 10, 100), True, False
 
+def cub(use_hd=True):
+    datasets = {}
+    classes = []
+    count = 0
+    for subset in ["train", "validation", "test"]:
+        data = []
+        target = []
+        with open(args.dataset_path + "CUB/" + subset + ".csv", "r") as f:
+            start = 0
+            for line in f:
+                if start == 0:
+                    start += 1
+                else:
+                    splits = line.split(",")
+                    fn, c = splits[0], splits[1]
+                    if c not in classes:
+                        classes.append(c)
+                    count += 1
+                    target.append(len(classes) - 1)
+                    path = args.dataset_path + "CUB/images/" + fn
+                    if not use_hd:
+                        image = transforms.ToTensor()(np.array(Image.open(path).convert('RGB')))
+                        data.append(image)
+                    else:
+                        data.append(path)
+        datasets[subset] = [data, torch.LongTensor(target)]
+    norm = transforms.Normalize(np.array([x / 255.0 for x in [125.3, 123.0, 113.9]]), np.array([x / 255.0 for x in [63.0, 62.1, 66.7]]))
+    train_transforms = torch.nn.Sequential(transforms.RandomResizedCrop(84), transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4), transforms.RandomHorizontalFlip(), norm)
 
 
+    all_transforms = torch.nn.Sequential(transforms.Resize(92,antialias=True), transforms.CenterCrop(84), norm) if args.sample_aug == 1 else torch.nn.Sequential(transforms.RandomResizedCrop(84,antialias=True), norm)
+    if args.episodic:
+        train_loader = episodic_iterator(datasets["train"][0], 64, transforms = train_transforms, forcecpu = True, use_hd = True)
+    else:
+        train_loader = iterator(datasets["train"][0], datasets["train"][1], transforms = train_transforms, forcecpu = True, use_hd = use_hd)
+    train_clean = iterator(datasets["train"][0], datasets["train"][1], transforms = all_transforms, forcecpu = True, shuffle = False, use_hd = use_hd)
+    val_loader = iterator(datasets["validation"][0], datasets["validation"][1], transforms = all_transforms, forcecpu = True, shuffle = False, use_hd = use_hd)
+    test_loader = iterator(datasets["test"][0], datasets["test"][1], transforms = all_transforms, forcecpu = True, shuffle = False, use_hd = use_hd)
+    #return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (64, 16, 20, 600), True, False
+    return (train_loader, train_clean, val_loader, test_loader), [3, 84, 84], (100, 50, 50, 40), True, False
+    
 def tieredImageNet(use_hd=True):
     """
     tiredImagenet dataset
@@ -641,8 +699,10 @@ def get_dataset(dataset_name):
         return mnist()
     elif dataset_name.lower() == "fashion":
         return fashion_mnist()
-    elif dataset_name.lower() == "miniimagenet":
+    elif dataset_name.lower() == "miniimagenetimages":
         return miniImageNet()
+    elif dataset_name.lower() == "cub":
+        return cub()
     elif dataset_name.lower() == "miniimagenet84":
         return miniImageNet84()
     elif dataset_name.lower() == "cubfs":

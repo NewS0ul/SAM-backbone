@@ -65,6 +65,24 @@ Train a model on miniimagenet using manifold mixup, self-supervision and cosine 
 
     $ python main.py --dataset-path "<dataset-path>" --dataset miniimagenet --model resnet12 --epochs 0 --manifold-mixup 500 --rotations --cosine --gamma 0.9 --milestones 100 --batch-size 128 --preprocessing ME --n-shots 1 --skip-epochs 450 --save-model "<path>/mini<backbone_number>.pt1"
 
+## Use Segment Anything to generate masks
+
+Use Automatic Mask Generator of Segment Anything for generating masks on images. The images are reshaped to (500,*) or (*,500) based on their aspect ratio. You can adjust average-height and average-width in the args to fit the average shape of your dataset. The folder of dataset must be a folder that contains a subfolder "images" containing all images, train.csv, validation.csv, test.csv.
+
+    $ python3 sam_crop.py --dataset-path "<dataset-path>" --dataset <miniimagenet|cub> --masks-dir "<masks-path>" --sam-type <"vit_h"|"vit_l"|"vit_b"> --sam-path
+
+dataset-path is the path to the dataset folder and masks-dir is the path to where the masks will be saved
+
+## Use DINO to filter the masks
+
+Use DINO-small maps attention to filter the background masks and to keep only the relevant masks
+
+    $ python3 dinoFilter.py --dataset-path "<dataset-path>" --dataset <miniimagent|cub> --masks-dir "<masks-path>" --filtered-masks-dir "<filtered_masks-path>" [OPTIONAL --dinov2]
+
+## Create features using masks
+    $ python3 main.py --dataset-path "<dataset-path>" --dataset <miniimagenet|cub> --model <resnet12|dino> --load-model "<checkpoint-path>" --masks-dir "<masks-path>" --use-masks --epochs 0 --batch-size 128 [OPTIONAL --save-features "<path to save features>"]
+
+
 ## Important Arguments
 Some important arguments for our code.
 
@@ -265,3 +283,4 @@ Experimental results on few-shot learning datasets with ResNet-12 backbone. We r
 |iLPC [45] |88.50 ± 0.75| 92.46 ± 0.42|
 |PEMnE-BMS∗ [32]| 86.07 ± 0.25 |91.09 ± 0.14|
 |EASY 3×ResNet12 (ours)| 84.29 ± 0.24| 89.76 ± 0.14|
+

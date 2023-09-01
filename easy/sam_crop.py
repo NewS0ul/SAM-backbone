@@ -13,67 +13,87 @@ import cv2
 from tqdm import tqdm
 import os
 import json
+from PIL import Image
 print("Done")
+
 class SAMcrop(object):
     def __init__(self):
         print("Loading SAM model...",end=" ")
-        sam = sam_model_registry[args.sam_type](checkpoint=args.sam_path)
+        sam = sam_model_registry[args.sam_type](checkpoint=args.sam_path) #load the model
         sam.to(args.device)
         print("Done")
-        self.mask_generator = SamAutomaticMaskGenerator(sam,points_per_side=args.points_per_side,stability_score_thresh=0.1) #low stability score to segment more
-        self.average_height = 500 #3rd quartile of the height of the images
-        self.average_width = 500 #3rd quartile of the width of the images
+        self.mask_generator = SamAutomaticMaskGenerator(sam,points_per_side=args.points_per_side,stability_score_thresh=args.stability_score_thresh) #set lower stability score threshold to get more masks
+        self.average_height = args.average_height
+        self.average_width = args.average_width
     def __call__(self,img):
-        torch.cuda.empty_cache()
-        height, width, _ = img.shape
-        aspect_ratio = width/height
-        img = torch.from_numpy(img).permute(2,0,1)
+        torch.cuda.empty_cache() #empty the cache to avoid memory error
+        img = Image.fromarray(img)
+        width, height = img.size
+        aspect_ratio = width/height #resize keeping the aspect ratio
         if height > width:
-            img = F.resize(img,(self.average_height,int(self.average_height*aspect_ratio)),antialias=True) #Resize the image to avoid memory error
+            img = F.resize(img,(self.average_height,int(self.average_height*aspect_ratio)),antialias=True)
         else : 
-            img = F.resize(img,(int(self.average_width/aspect_ratio),self.average_width),antialias=True) #Resize the image to avoid memory error
-        img = img.permute(1,2,0).numpy()
-
+            img = F.resize(img,(int(self.average_width/aspect_ratio),self.average_width),antialias=True)
         with torch.inference_mode():
-            try:
-                masks = self.mask_generator.generate(img)
-                masks = [mask["segmentation"] for mask in masks]
-            except RuntimeError:
-                masks = []
+            img = np.array(img)
+            masks = self.mask_generator.generate(img)
         return masks
 
-print("loading masks...")
-if os.path.exists(args.masks_dir+"/masks_per_image.json"):
-    with open(args.masks_dir+"/masks_per_image.json","r") as f:
-        masks_per_image = json.load(f)
-    print("Done")
-else:
-    masks_per_image = {}
-    print("No masks found")
-print("Number of images with masks:",len(masks_per_image))
-all_filename = pd.concat([pd.read_csv(args.dataset_path+"/miniimagenetimages/"+subset)["filename"] for subset in ["train.csv","validation.csv","test.csv"]])
-samCrop = SAMcrop()
+try:
+    with open(f"{args.masks_dir}/skipped.txt","r") as f:
+        skipped_images = f.readlines()
+        skipped_images = [image.strip() for image in skipped_images]
+except FileNotFoundError:
+    skipped_images = []
+try:
+    with open(f"{args.masks_dir}/masks_info.json","r") as f:
+        masks_info = json.load(f)
+except FileNotFoundError:
+    masks_info = {}
 
-print("Start generating masks...")
+
+print("loading masks...")
+already_processed = set([filename.replace(".npz",".jpg") for filename in os.listdir(args.masks_dir) 
+                         if filename.replace(".npz",".jpg") in masks_info.keys() or filename.replace(".npz",".jpg") in skipped_images]) #get the images already processed
+print(f"loaded masks for {len(already_processed)} images")
+all_filename = pd.concat([pd.read_csv(f"{args.dataset_path}{args.dataset}/{subset}")["filename"] for subset in ["train.csv","validation.csv","test.csv"]]) #get all the images
+samCrop = SAMcrop()
+skipped = 0
+print("Start generating masks for",args.dataset,"...")
 with torch.inference_mode():
-    skipped = 0
-    for filename in tqdm(all_filename):
-        if filename in masks_per_image:
-            continue
-        masks_per_image[filename] = []
-        path = args.dataset_path + "/miniimagenetimages/images/" + filename
-        image = cv2.imread(path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        masks = samCrop(image) #list of masks
-        print("Number of masks:",len(masks))
-        if len(masks) == 0:
-            skipped += 1
-        print("Skipped:",skipped)
-        masks.append(np.ones((image.shape[0],image.shape[1]))) #Add a mask for the whole image
-        for i in range(len(masks)):
-            crop_name = filename[:-4] + "_" + str(i)+".pt"
-            masks_per_image[filename].append(crop_name)
-            torch.save(torch.from_numpy(masks[i].astype(bool)),args.masks_dir+"/"+crop_name)
-        with open(args.masks_dir+"/masks_per_image.json","w") as f:
-            json.dump(masks_per_image,f)
-print("Done")
+    with tqdm(total=len(all_filename)) as pbar:
+        for filename in all_filename:
+            if filename in already_processed:
+                pbar.update(1)
+                continue
+            path = f"{args.dataset_path}{args.dataset}/images/{filename}"
+            image = cv2.imread(path) 
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            try:
+                masks = samCrop(image)
+            except RuntimeError: #may have memory error when generating masks
+                masks = []
+                skipped+=1
+                with open(f"{args.masks_dir}/skipped.txt","a") as f: #write the images that c
+                    f.write(f"{filename}\n")
+            if len(masks)>0:
+                masks_array = np.array([mask.pop("segmentation") for mask in masks]) #get only the segmentation array
+                masks_info[filename] = masks #get other info
+            else:
+                masks_array = np.array([])
+                masks_info[filename] = []
+                with open(f"{args.masks_dir}/skipped.txt","a") as f:
+                    f.write(f"{filename}\n")
+            np.savez_compressed(f"{args.masks_dir}/{filename.replace('.jpg','.npz')}",masks=masks_array) #save the masks
+            pbar.set_description(f"{filename} | Number of masks: {len(masks)} | Skipped: {skipped}")
+            pbar.update(1)
+            with open(f"{args.masks_dir}/masks_info.json","w") as f: #save the info
+                json.dump(masks_info,f)
+try:
+    with open(f"{args.masks_dir}/skipped.txt","r") as f:
+        skipped = f.read().splitlines()
+        for filename in skipped:
+            print(f"skipped {filename}")
+        print(f"skipped {len(skipped)} images")
+except FileNotFoundError:
+    print("No skipped images")

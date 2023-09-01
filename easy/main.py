@@ -12,7 +12,7 @@ print("Using pytorch version: " + torch.__version__)
 ### local imports
 print("Importing local files: ", end = '')
 from args import args
-from utils import *
+from utils_0 import *
 import datasets
 import few_shot_eval
 import resnet
@@ -20,6 +20,7 @@ import wideresnet
 import resnet12
 import s2m2
 import mlp
+from tqdm import tqdm
 print("models.")
 if args.ema > 0:
     from torch_ema import ExponentialMovingAverage
@@ -182,53 +183,56 @@ def train_complete(model, loaders, mixup = False):
         train_loader, val_loader, test_loader = loaders
 
     lr = args.lr
+    if args.model.lower() != "dino":
+        for epoch in range(args.epochs + args.manifold_mixup):
 
-    for epoch in range(args.epochs + args.manifold_mixup):
-
-        if few_shot and args.dataset_size > 0:
-            length = args.dataset_size // args.batch_size + (1 if args.dataset_size % args.batch_size != 0 else 0)
-        else:
-            length = len(train_loader)
-
-        if (args.cosine and epoch % args.milestones[0] == 0) or epoch == 0:
-            if lr < 0:
-                optimizer = torch.optim.Adam(model.parameters(), lr = -1 * lr)
+            if few_shot and args.dataset_size > 0:
+                length = args.dataset_size // args.batch_size + (1 if args.dataset_size % args.batch_size != 0 else 0)
             else:
-                optimizer = torch.optim.SGD(model.parameters(), lr = lr, momentum = 0.9, weight_decay = 5e-4, nesterov = True)
-            if args.cosine:
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max = args.milestones[0] * length)
-                lr = lr * args.gamma
-            else:
-                scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones = list(np.array(args.milestones) * length), gamma = args.gamma)
+                length = len(train_loader)
 
-        train_stats = train(model, train_loader, optimizer, (epoch + 1), scheduler, mixup = mixup, mm = epoch >= args.epochs)        
-        
-        if args.save_model != "" and not few_shot:
-            if len(args.devices) == 1:
-                torch.save(model.state_dict(), args.save_model)
-            else:
-                torch.save(model.module.state_dict(), args.save_model)
-        
-        if (epoch + 1) > args.skip_epochs:
-            if few_shot:
-                if args.ema > 0:
-                    ema.store()
-                    ema.copy_to()
-                res = few_shot_eval.update_few_shot_meta_data(model, train_clean, novel_loader, val_loader, few_shot_meta_data)
-                if args.ema > 0:
-                    ema.restore()
-                for i in range(len(args.n_shots)):
-                    print("val-{:d}: {:.2f}%, nov-{:d}: {:.2f}% ({:.2f}%) ".format(args.n_shots[i], 100 * res[i][0], args.n_shots[i], 100 * res[i][2], 100 * few_shot_meta_data["best_novel_acc"][i]), end = '')
-                    if args.wandb:
-                        wandb.log({'epoch':epoch, f'val-{args.n_shots[i]}':res[i][0], f'nov-{args.n_shots[i]}':res[i][2], f'best-nov-{args.n_shots[i]}':few_shot_meta_data["best_novel_acc"][i]})
-
-                print()
-            else:
-                test_stats = test(model, test_loader)
-                if top_5:
-                    print("top-1: {:.2f}%, top-5: {:.2f}%".format(100 * test_stats["test_acc"], 100 * test_stats["test_acc_top_5"]))
+            if (args.cosine and epoch % args.milestones[0] == 0) or epoch == 0:
+                if lr < 0:
+                    optimizer = torch.optim.Adam(model.parameters(), lr = -1 * lr)
                 else:
-                    print("test acc: {:.2f}%".format(100 * test_stats["test_acc"]))
+                    optimizer = torch.optim.SGD(model.parameters(), lr = lr, momentum = 0.9, weight_decay = 5e-4, nesterov = True)
+                if args.cosine:
+                    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max = args.milestones[0] * length)
+                    lr = lr * args.gamma
+                else:
+                    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones = list(np.array(args.milestones) * length), gamma = args.gamma)
+
+            train_stats = train(model, train_loader, optimizer, (epoch + 1), scheduler, mixup = mixup, mm = epoch >= args.epochs)        
+            
+            if args.save_model != "" and not few_shot:
+                if len(args.devices) == 1:
+                    torch.save(model.state_dict(), args.save_model)
+                else:
+                    torch.save(model.module.state_dict(), args.save_model)
+            
+            if (epoch + 1) > args.skip_epochs:
+                if few_shot:
+                    if args.ema > 0:
+                        ema.store()
+                        ema.copy_to()
+                    res = few_shot_eval.update_few_shot_meta_data(model, train_clean, novel_loader, val_loader, few_shot_meta_data)
+                    if args.ema > 0:
+                        ema.restore()
+                    for i in range(len(args.n_shots)):
+                        print("val-{:d}: {:.2f}%, nov-{:d}: {:.2f}% ({:.2f}%) ".format(args.n_shots[i], 100 * res[i][0], args.n_shots[i], 100 * res[i][2], 100 * few_shot_meta_data["best_novel_acc"][i]), end = '')
+                        if args.wandb:
+                            wandb.log({'epoch':epoch, f'val-{args.n_shots[i]}':res[i][0], f'nov-{args.n_shots[i]}':res[i][2], f'best-nov-{args.n_shots[i]}':few_shot_meta_data["best_novel_acc"][i]})
+
+                    print()
+                else:
+                    test_stats = test(model, test_loader)
+                    if top_5:
+                        print("top-1: {:.2f}%, top-5: {:.2f}%".format(100 * test_stats["test_acc"], 100 * test_stats["test_acc_top_5"]))
+                    else:
+                        print("test acc: {:.2f}%".format(100 * test_stats["test_acc"]))
+    else:
+        if args.epochs > 0:
+            print("Dino training not implemented")
 
     if args.epochs + args.manifold_mixup <= args.skip_epochs:
         if few_shot:
@@ -248,6 +252,7 @@ def train_complete(model, loaders, mixup = False):
 
 ### process main arguments
 loaders, input_shape, num_classes, few_shot, top_5 = datasets.get_dataset(args.dataset)
+
 ### initialize few-shot meta data
 if few_shot:
     num_classes, val_classes, novel_classes, elements_per_class = num_classes
@@ -257,8 +262,7 @@ if few_shot:
         elements_val, elements_novel = [elements_per_class] * val_classes, [elements_per_class] * novel_classes
         elements_train = None
     print("Dataset contains",num_classes,"base classes,",val_classes,"val classes and",novel_classes,"novel classes.")
-    print("Generating runs... ", end='')
-
+    print("Generating runs... ")
     val_runs = list(zip(*[few_shot_eval.define_runs(args.n_ways, s, args.n_queries, val_classes, elements_val) for s in args.n_shots]))
     val_run_classes, val_run_indices = val_runs[0], val_runs[1]
     novel_runs = list(zip(*[few_shot_eval.define_runs(args.n_ways, s, args.n_queries, novel_classes, elements_novel) for s in args.n_shots]))
@@ -300,33 +304,56 @@ def create_model():
     if args.model.lower() == "wideresnet":
         return wideresnet.WideResNet(args.feature_maps, input_shape, few_shot, args.rotations, num_classes = num_classes).to(args.device)
     if args.model.lower() == "resnet12":
-        #return resnet12.ResNet12(args.feature_maps, input_shape, num_classes, few_shot, args.rotations).to(args.device)
-        return resnet12.ResNet12(args.feature_maps, input_shape, 64, few_shot, args.rotations).to(args.device)
+        if args.dataset.lower() == "miniimagenetimages":
+            num_classes = 64 # that's just the number of classes on which the model was trained
+        elif args.dataset.lower() == "cub":
+            num_classes = 100 # that's just the number of classes on which the model was trained
+        return resnet12.ResNet12(args.feature_maps, input_shape, num_classes, few_shot, args.rotations).to(args.device)
 
     if args.model.lower()[:3] == "mlp":
         return mlp.MLP(args.feature_maps, int(args.model[3:]), input_shape, num_classes, args.rotations, few_shot).to(args.device)
     if args.model.lower() == "s2m2r":
         return s2m2.S2M2R(args.feature_maps, input_shape, args.rotations, num_classes = num_classes).to(args.device)
+    if args.model.lower() == "dino":
+        model = torch.hub.load('facebookresearch/dino:main', 'dino_vits16')
+        return model.to(args.device)
 
 if args.test_features != "":
     try:
         filenames = eval(args.test_features)
     except:
         filenames = args.test_features
-    if isinstance(filenames, str):
+    if filenames[0] != "[":
         filenames = [filenames]
+    else:
+        filenames = filenames[1:-1].split(",")
+    print("Loading features from", filenames)
+        
     if args.use_masks:
-        features = torch.load(filenames[0], map_location=torch.device(args.device)) #only one file if masks are used
         train_features = {}
         val_features = {}
         test_features = {}
-        for i,class_name in enumerate(features.keys()):
-            if i < num_classes:
-                train_features[class_name] = features[class_name]
-            elif i < num_classes + val_classes:
-                val_features[class_name] = features[class_name]
+        for i,file in enumerate(tqdm(filenames)):
+            features = torch.load(file, map_location=torch.device(args.device))
+            if i == 0:
+                for j,class_name in enumerate(features.keys()):
+                    if j < num_classes:
+                        train_features[class_name] = features[class_name]
+                    elif j < num_classes + val_classes:
+                        val_features[class_name] = features[class_name]
+                    else:
+                        test_features[class_name] = features[class_name]
             else:
-                test_features[class_name] = features[class_name]
+                for j,class_name in enumerate(features.keys()):
+                    for img_name in features[class_name].keys():
+                        for k in range(len(features[class_name][img_name])):
+                            if j < num_classes:
+                                train_features[class_name][img_name][k] = torch.cat([train_features[class_name][img_name][k], features[class_name][img_name][k]], dim = 0)
+                            elif j < num_classes + val_classes:
+                                val_features[class_name][img_name][k] = torch.cat([val_features[class_name][img_name][k], features[class_name][img_name][k]], dim = 0)
+                            else:
+                                test_features[class_name][img_name][k] = torch.cat([test_features[class_name][img_name][k], features[class_name][img_name][k]], dim = 0)
+    
     else:
         test_features = torch.cat([torch.load(fn, map_location=torch.device(args.device)).to(args.dataset_device) for fn in filenames], dim = 2)
         print("Testing features of shape", test_features.shape)
@@ -358,10 +385,10 @@ for i in range(args.runs):
     if args.ema > 0:
         ema = ExponentialMovingAverage(model.parameters(), decay=args.ema)
 
-    if args.load_model != "":
+    if args.load_model != "" and args.model.lower() != "dino":
         model.load_state_dict(torch.load(args.load_model, map_location=torch.device(args.device)))
         model.to(args.device)
-
+    
     if len(args.devices) > 1:
         model = torch.nn.DataParallel(model, device_ids = args.devices)
     

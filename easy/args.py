@@ -98,13 +98,15 @@ parser.add_argument("--transductive-cosine", action="store_true", help="use cosi
 parser.add_argument("--sam-type", type=str, default="", help="size of SAM ViT")
 parser.add_argument("--sam-path", type=str, default="", help="path to SAM") 
 parser.add_argument("--points-per-side", type=int, default=10, help="number of points for automatic mask generator")
-parser.add_argument("--all-filenamecsv", type=str, default="", help="csv file containing all the filenames")
-parser.add_argument("--skipped-images", type=str, default="", help="csv file containing the skipped images when creating masks")
-parser.add_argument("--processed-masks", type=str, default="", help="directory containing the masks names that have been processed for feature extraction")
-parser.add_argument("--load-features-checkpoint", type=str, default="", help="load features checkpoint")
+parser.add_argument("--stability-score-thresh", type=float, default=0.1, help="stability score threshold for automatic mask generator")
 parser.add_argument("--crop-threshold", type=float, default=0.3, help="Replace crop if crop ratio is below threshold when using SAM")
 parser.add_argument("--masks-dir", type=str, default="", help="directory containing the masks using SAM")
+parser.add_argument("--filtered-masks-dir", type=str, default="", help="directory containing the filtered masks using DINO")
 parser.add_argument("--use-masks", action="store_true", help="use masks for feature extraction")
+parser.add_argument("--dinov2", action="store_true", help="use dinov2")
+parser.add_argument("--average-height", type=int, default=500, help="average height for SAM")
+parser.add_argument("--average-width", type=int, default=500, help="average width for SAM")
+parser.add_argument("--resize", action="store_false", help="resize images to average height and width")
 try :
     get_ipython()
     args = parser.parse_args(args=[])
@@ -112,7 +114,8 @@ except :
     args = parser.parse_args()
 
 #args.dataset_path = "/nasbrain/f21lin/testing"
-#args.masks_dir = "/nasbrain/f21lin/masks"
+#args.masks_dir = "/nasbrain/f21lin/filtered_masks"
+#print("!!!!!!!!!!!!!!!Change dataset path and masks dir!!!!!!!!!!!!!!!!!!!!!!")
 
 ### process arguments
 if args.dataset_device == "":
@@ -121,6 +124,11 @@ if args.dataset_device == "":
 
 if args.dataset_path[-1] != '/':
     args.dataset_path += "/"
+
+if args.dataset.lower() == "miniimagenet":
+    args.dataset = "miniimagenetimages"
+elif args.dataset.lower() == "cub":
+    args.dataset = "CUB"
 
 if args.device[:5] == "cuda:" and len(args.device) > 5:
     args.devices = []
